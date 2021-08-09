@@ -1,0 +1,125 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: 'AWS CloudFormation Template creates EKS cluster with the custom resource (lambda) to control the public/private endpoint access of the deployed eks cluster. It creates 4 resources namely 1 Lambda Functions, 1 Custom Resources, 1 EKS Cluster and 1 LambdaExecutionRole.' 
+
+Parameters: 
+
+  pS3BucketName: # parameter for the S3 Buckte name 
+    Type: String
+    Description: Enter s3 bucket name where you have uploaded the lambda zip file
+
+  pS3Key: # parameter for the S3 Key (file name)
+    Type: String
+    Default: "lambda_for_eks_endpoint.zip"
+    Description: Enter name of the Zip file which is uploaded to S3 Bucket
+
+  pEndpointPublicAccessValue: # parameter for the EndpointPublicAccessValue for EKS Cluster
+    Type: String
+    Default: True
+    AllowedValues:
+      - True
+      - False
+    Description: Enter True or False. Default is True.
+
+  pEndpointPrivateAccessValue: # parameter for the EndpointPrivateAccessValue for EKS Cluster
+    Type: String
+    Default: False
+    AllowedValues: 
+      - True
+      - False
+    Description: Enter True or False. Default is False.
+
+  pEksClusterName: # parameter for name of the EKS Cluster
+    Type: String
+    Description: Provide a name to be used for EKS Cluster
+
+  pVersion: # parameter for kubernetes Version of the EKS Cluster
+    Type: String
+    Description: Provide the version to be used for EKS Cluster
+    ConstraintDescription: "Please provide the valid EKS Version: https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html#available-versions"
+
+  pRoleArn: # parameter for IAM role ARN for the EKS Cluster
+    Type: String
+    Description: The Amazon Resource Name (ARN) of the IAM role that provides permissions for Amazon EKS to make calls to other AWS API operations on your behalf.
+
+  pSecurityGroupIds: # parameter for securitygroup IDs of the EKS Cluster
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Specify one or more security groups for the cross-account elastic network interfaces that Amazon EKS creates to use to allow communication between your worker nodes and the Kubernetes control plane.
+
+  pSubnetIds: # parameter for subnet IDs of the EKS Cluster
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Specify subnets for your Amazon EKS worker nodes. Amazon EKS creates cross-account elastic network interfaces in these subnets to allow communication between your worker nodes and the Kubernetes control plane.
+
+
+Resources:
+
+  rEksCluster: # creates EKS cluster 
+    Type: AWS::EKS::Cluster
+    Properties:
+     Name: !Ref rEksClusterName
+     Version: !Ref pVersion
+     RoleArn: !Ref pRoleArn
+     ResourcesVpcConfig:
+      SecurityGroupIds: !Ref pSecurityGroupIds
+      SubnetIds: !Ref pSubnetIds
+
+  rLambdaFunction: # creates the lambda function for the custom resource
+    Type: "AWS::Lambda::Function"
+    Properties: 
+     Handler: "lambda.lambda_handler"
+     Role: !GetAtt rLambdaExecutionRole.Arn
+     Code: 
+      S3Bucket: !Ref pS3BucketName
+      S3Key: !Ref pS3Key
+     Runtime: "python3.7"
+     Timeout: 900
+
+  rEndpointAccessUpdate: #Custom Resource to take control on public/private endpoint access
+    Type: Custom::EndpointAccessUpdate
+    DependsOn:
+     - rLambdaFunction
+     - rEksCluster
+    Properties:
+     ServiceToken:
+      Fn::GetAtt: 
+        - "rLambdaFunction"
+        - "Arn"
+     clustername: !Ref rEksCluster
+     endpointPublicAccessValue: !Ref pEndpointPublicAccessValue
+     endpointPrivateAccessValue: !Ref pEndpointPrivateAccessValue
+
+  rLambdaExecutionRole: # creates IAM role for the execution of lambda 
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+        - Effect: Allow
+          Principal:
+            Service:
+            - eks.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:*
+            Resource: arn:aws:logs:*:*:*
+          - Effect: Allow
+            Action:
+            - eks:DescribeUpdate
+            - eks:DescribeCluster
+            - eks:UpdateClusterConfig
+            Resource: "*"
